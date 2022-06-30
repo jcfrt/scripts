@@ -6,6 +6,11 @@ from sys import argv
 from collections import defaultdict
 from packaging import version
 import json
+import pprint
+import logging
+log = logging.getLogger()
+logging.basicConfig()
+log.setLevel(logging.DEBUG)
 
 # From a TSV file exported from google admin logs with the following headers:
 # Device Name,Name,Email,Ownership,Type,Model,First Sync,Last Sync,Status,Device ID,Serial Number (mandatory),IMEI / MEID,OS,User Agent,Host Name
@@ -55,11 +60,6 @@ def is_obsolete_version(version_str: str) -> bool:
 
 
 if __name__ == "__main__":
-  input_csv = Path(argv[1])
-  if not input_csv.exists():
-    print(f"File {input_csv.name} does not exist. Exiting.")
-    exit(1)
-  
   # Grab offboarded users if we have one
   offboarded_user_emails = set()
   offboarded_csv = Path("offboarded_users_gam.csv")
@@ -67,7 +67,7 @@ if __name__ == "__main__":
     for row in yield_from_CSV(offboarded_csv):
       if email := row.get("primaryEmail"):
         offboarded_user_emails.add(email)
-    print(f"Got {len(offboarded_user_emails)} offboarded users that we will ignore.")
+  log.info(f"Got {len(offboarded_user_emails)} offboarded users that we will ignore.")
 
   # Need users who are in the /protected OU as well, so dead code for now:
   # active_user_emails = set()
@@ -78,45 +78,83 @@ if __name__ == "__main__":
   #       active_user_emails.add(email)
   #   print(f"Got {len(active_user_emails)} active users from Google directory.")
 
+  generate_simple_message = False
+
+  # Merge two different CSV exports (ie. Windows and Mac) into one 
+  # if more than one dataset passed as arguments
+  merged_dataset = [] # list of rows
+  for arg in argv[1:]:
+    input_csv = Path(arg)
+    log.info(f"Loading input file: {input_csv}")
+    if not input_csv.exists():
+      print(f"File {input_csv.name} does not exist. Exiting.")
+      exit(1)
+    for row in yield_from_CSV(input_csv, delimiter=','):
+      merged_dataset.append(row)
+
+  # pprint.pprint(merged_dataset, indent=4)
 
   skipped = set()
   user_map = defaultdict(lambda: {"devices": {}, "name": ""})
-  for row in yield_from_CSV(input_csv, delimiter=','):
-    # last_seen = row.get("Last Sync")
-    
+  for row in merged_dataset:  
     email = row.get("Email")
     device_type = row.get("Type")
     
     if not email or not device_type:
       skipped.add(email)
-      print(f"Skipping row due to missing email or device type: {row}")
+      log.debug(
+        f"Skipping row due to missing email or device type. "
+        f"Email: {row.get('Email')}, Type: {row.get('Type')}.\n"
+        f"row {row}")
       continue
     
     if email in offboarded_user_emails: # or email not in active_user_emails:
       skipped.add(email)
-      print(f"Skipping already offboarded user: {email}")
+      log.info(f"Skipping already offboarded user: {email}")
     
     _version = row.get("OS")
+    # print(f"{email}: OS: {_version}")
     
     if is_obsolete_version(_version):
+      log.debug(f"{_version} for {email} is obsolete.")
+      if prev_version := user_map.get(email, {}).get("devices", {}).get(device_type, None):
+        if version.parse(prev_version) > version.parse(_version):
+          log.debug(
+            f"Skiping {device_type} version {_version} due to an already "
+            f"recorded version {prev_version}"
+          )
+          continue
       user_map[email]["devices"][device_type] = _version
       user_map[email]["name"] = row.get("Name")
 
   print(f"Filtered out {len(skipped)} users who have been offboarded already.")
 
-  print(json.dumps(user_map, indent=2))
+  # print(json.dumps(user_map, indent=2, ensure_ascii=False))
+
+  print(f"{len(user_map)} users with non-compliant OS versions.")
+  
   with open("emails_to_found_obsolete_os.json", 'w') as f:
     json.dump(user_map, f, indent=2, ensure_ascii=False)
 
   # Recreate values with ones that will be directly replaced in warning email template
   user_to_message = defaultdict(lambda: {})
   for email, data in user_map.items():
+    # Generate a string like "Mac, iOS, Windows devices"
+    if generate_simple_message:
+      for dev in data.get("devices"):
+        user_to_message[email]["message"] = ", ".join([d for d in data["devices"].keys()]) + " device"
+      if len(data.get("devices")) > 1:
+        # add plural mark
+        user_to_message[email]["message"] += "s"
+
+    # Simply list os version (useful if we have an import CSV for only Mac, or only Windows)
     for dev in data.get("devices"):
-      user_to_message[email]["message"] = ", ".join([d for d in data["devices"].keys()]) + " device"
-    if len(data.get("devices")) > 1:
-      # add plural mark
-      user_to_message[email]["message"] += "s"
+      # We should only have one device in this case
+      user_to_message[email]["message"] = list(data.get("devices", {}).values())[0]
+
+    # Add the name of the user, for better greeting at the beginning of the email
     user_to_message[email]["name"] = data.get("name")
+
 
   # export to CSV in order to load in Google Sheets
   with open('emails_to_devices_to_update.csv', 'w', newline='') as csvfile:
@@ -124,10 +162,10 @@ if __name__ == "__main__":
     writer = csv.DictWriter(csvfile, fieldnames=fieldnames, delimiter='\t')
 
     writer.writeheader()
-    for user, data in user_to_message.items():
+    for email, data in user_to_message.items():
       writer.writerow(
         {
-          fieldnames[0]: user, 
+          fieldnames[0]: email, 
           fieldnames[1]: data.get("name"), 
           fieldnames[2]: data.get("message")
         }
