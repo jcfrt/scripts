@@ -17,10 +17,11 @@ log.setLevel(logging.DEBUG)
 # the output should be a mapping where keys are the Email field values (therefore unique),
 # and values for each should be a list (or mapping) of any obsolete OS version
 # per device type.
-# A second output should be a csv representing each email (user) and the custom
-# text to send them by email. 
+# Another output should be a csv representing each email (user) and the custom
+# text to send them by email.
 # Example: "iOS, Mac devices" for "please update your iOS, Mac devices ASAP"
-
+# Note that only the oldest version is kept in the mapping. We do not care about
+# the last sync date because they are all the same anyway and make no sense.
 
 def yield_from_CSV(csv_file_path: Path, delimiter='\t') -> Generator[Dict[str, str], None, None]:
   """
@@ -30,7 +31,7 @@ def yield_from_CSV(csv_file_path: Path, delimiter='\t') -> Generator[Dict[str, s
     csv_reader = csv.DictReader(f, delimiter=delimiter)
     if not csv_reader:
       raise Exception(f"No data found in input file {csv_file_path.name}.")
-    
+
     for row in csv_reader:
       yield row
 
@@ -49,7 +50,7 @@ def is_obsolete_version(version_str: str) -> bool:
     vnum = vnum[-1]
   parsed_vnum = version.parse(vnum)
   if "android" in version_str.lower() and parsed_vnum < ANDROID_MIN_VERSION:
-      return "Android device"
+      return True
   if "ios" in version_str.lower() and parsed_vnum < IOS_MIN_VERSION:
     return True
   if "macos" in version_str.lower() and parsed_vnum < MACOS_MIN_VERSION:
@@ -80,7 +81,7 @@ if __name__ == "__main__":
 
   generate_simple_message = False
 
-  # Merge two different CSV exports (ie. Windows and Mac) into one 
+  # Merge two different CSV exports (ie. Windows and Mac) into one
   # if more than one dataset passed as arguments
   merged_dataset = [] # list of rows
   for arg in argv[1:]:
@@ -96,10 +97,13 @@ if __name__ == "__main__":
 
   skipped = set()
   user_map = defaultdict(lambda: {"devices": {}, "name": ""})
-  for row in merged_dataset:  
+
+  for row in merged_dataset:
     email = row.get("Email")
-    device_type = row.get("Type")
-    
+    device_type = row.get("Type", "")
+    device_model = row.get("Model", "")
+    device_id = device_type + "_" + device_model
+
     if not email or not device_type:
       skipped.add(email)
       log.debug(
@@ -107,32 +111,48 @@ if __name__ == "__main__":
         f"Email: {row.get('Email')}, Type: {row.get('Type')}.\n"
         f"row {row}")
       continue
-    
+
     if email in offboarded_user_emails: # or email not in active_user_emails:
       skipped.add(email)
       log.info(f"Skipping already offboarded user: {email}")
-    
+
     _version = row.get("OS")
-    # print(f"{email}: OS: {_version}")
+
+
+    if not is_obsolete_version(_version):
+      # log.debug(f"{_version} for {email} is NOT obsolete.")
+
+      if prev_version := user_map.get(email, {}).get("devices", {}).get(device_id, None):
+        log.debug(f"Newer version {_version} found for {email} while previous version {prev_version}. Removing entry {device_id}.")
+        del user_map[email]["devices"][device_id]
+      continue
+
+    # log.debug(f"{_version} for {email} is OBSOLETE.")
+
+    if prev_version := user_map.get(email, {}).get("devices", {}).get(device_id, None):
+      log.debug(f"Got a previous entry for {email}: {prev_version}. Comparing with new version: {_version}")
+      if version.parse(prev_version) < version.parse(_version):
+        log.debug(
+          f"Overwriting {device_id} version {_version} due to an already "
+          f"recorded version {prev_version} for device type {device_id} for {email}."
+        )
+        # overwrite
+        user_map[email]["devices"][device_id] = _version
+        user_map[email]["name"] = row.get("Name")
+      continue
     
-    if is_obsolete_version(_version):
-      log.debug(f"{_version} for {email} is obsolete.")
-      if prev_version := user_map.get(email, {}).get("devices", {}).get(device_type, None):
-        if version.parse(prev_version) > version.parse(_version):
-          log.debug(
-            f"Skiping {device_type} version {_version} due to an already "
-            f"recorded version {prev_version}"
-          )
-          continue
-      user_map[email]["devices"][device_type] = _version
-      user_map[email]["name"] = row.get("Name")
+    user_map[email]["devices"][device_id] = _version
+    user_map[email]["name"] = row.get("Name")
+
+  # Remove users with no reported obsolete device 
+  user_map = { k: v for k,v in user_map.items() if v.get("devices")}
 
   print(f"Filtered out {len(skipped)} users who have been offboarded already.")
 
-  # print(json.dumps(user_map, indent=2, ensure_ascii=False))
+  # log.debug(json.dumps(user_map, indent=2, ensure_ascii=False))
 
   print(f"{len(user_map)} users with non-compliant OS versions.")
-  
+
   with open("emails_to_found_obsolete_os.json", 'w') as f:
     json.dump(user_map, f, indent=2, ensure_ascii=False)
 
@@ -150,7 +170,7 @@ if __name__ == "__main__":
     # Simply list os version (useful if we have an import CSV for only Mac, or only Windows)
     for dev in data.get("devices"):
       # We should only have one device in this case
-      user_to_message[email]["message"] = list(data.get("devices", {}).values())[0]
+      user_to_message[email]["message"] = ", ".join(list(data.get("devices", {}).values()))
 
     # Add the name of the user, for better greeting at the beginning of the email
     user_to_message[email]["name"] = data.get("name")
@@ -165,8 +185,8 @@ if __name__ == "__main__":
     for email, data in user_to_message.items():
       writer.writerow(
         {
-          fieldnames[0]: email, 
-          fieldnames[1]: data.get("name"), 
+          fieldnames[0]: email,
+          fieldnames[1]: data.get("name"),
           fieldnames[2]: data.get("message")
         }
       )
