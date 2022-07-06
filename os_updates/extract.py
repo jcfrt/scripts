@@ -38,7 +38,7 @@ def yield_from_CSV(csv_file_path: Path, delimiter='\t') -> Generator[Dict[str, s
 
 MACOS_MIN_VERSION = version.parse("10.15.7") # (Catalina)
 WINDOWS_MIN_VERSION = version.parse("10.0.19044.1767") # (Version 21H2)
-IOS_MIN_VERSION = version.parse("15.5")
+IOS_MIN_VERSION = version.parse("15.0")
 ANDROID_MIN_VERSION = version.parse("10.0.0") # "10.0.0_r67"
 LINUX_MIN_VERSION = version.parse("5.7")
 
@@ -144,8 +144,11 @@ if __name__ == "__main__":
     user_map[email]["devices"][device_id] = _version
     user_map[email]["name"] = row.get("Name")
 
+  # DEBUG
+  # pprint.pprint(user_map, indent=2)
+
   # Remove users with no reported obsolete device 
-  user_map = { k: v for k,v in user_map.items() if v.get("devices")}
+  user_map = {k: v for k,v in user_map.items() if v.get("devices").keys()}
 
   print(f"Filtered out {len(skipped)} users who have been offboarded already.")
 
