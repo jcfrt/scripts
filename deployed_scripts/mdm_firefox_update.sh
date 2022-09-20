@@ -1,20 +1,5 @@
 #!/bin/zsh
-############
-# This script installs/updates the latest version of the Firefox web browser.
-############
-# 1.4 - Ludo 20-05
-#        * Fixed non existence Exiting
-#        * Fixed corrupted file
-# 1.3 - Sandray Douglas / Jean-Carol Forato - 20-05-2022
-#        * Script not truly functional yet, install seems corrupted.
-# 1.2 - Sandray Douglas / Jean-Carol Forato - 19-05-2022
-#        * Use shell script instead.
-# 1.1 - Sandray Douglas / Jean-Carol Forato - 19-05-2022
-#        * Use shell before calling the python interpreter.
-# 1.0 - Sandray Douglas - 19-06-2022
-#        * Initial script creation.
-############
-
+# This script installs/updates the latest version of the Firefox web browser for MacOS
 
 URL='https://download.mozilla.org/?product=firefox-latest&os=osx&lang=en-US'
 OUT_DIR="/tmp"
